@@ -1,0 +1,1640 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📚 資料検索AI Pro v4 - Google Drive版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary': '#2563eb',
+                        'primary-dark': '#1d4ed8',
+                        'gdrive': '#4285f4',
+                        'bg-main': '#f8fafc',
+                        'bg-card': '#ffffff',
+                        'text-main': '#1e293b',
+                        'text-muted': '#64748b',
+                        'border-light': '#e2e8f0',
+                        'accent': '#8b5cf6',
+                        'success': '#10b981',
+                        'warning': '#f59e0b',
+                        'danger': '#ef4444',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        * { box-sizing: border-box; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .fade-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .gradient-text {
+            background: linear-gradient(135deg, #4285f4, #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        .ext-badge {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body class="bg-bg-main text-text-main">
+    <div id="app">
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="text-center">
+                <div class="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                <p class="text-text-muted">読み込み中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- プレビューモーダル -->
+    <div id="previewModal" class="fixed inset-0 modal-overlay z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+            <div class="p-4 border-b flex items-center justify-between">
+                <div>
+                    <h3 id="previewTitle" class="text-lg font-bold"></h3>
+                    <p id="previewMeta" class="text-sm text-text-muted"></p>
+                </div>
+                <button id="closePreview" class="p-2 hover:bg-gray-100 rounded-lg text-2xl">&times;</button>
+            </div>
+            <div id="previewContent" class="flex-1 overflow-auto p-4 custom-scrollbar"></div>
+            <div class="p-4 border-t flex justify-end gap-3">
+                <button id="cancelDownload" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg">キャンセル</button>
+                <button id="confirmDownload" class="px-4 py-2 bg-primary text-white hover:bg-primary-dark rounded-lg flex items-center gap-2">
+                    <span>💾</span>
+                    <span>ダウンロード</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { GoogleGenAI } from "https://esm.sh/@google/genai@^1.0.0";
+
+        // ===========================================
+        // 設定
+        // ===========================================
+        const GOOGLE_CLIENT_ID = '728637146579-giv0dcoukft1bo9223lv5go6gsfshjle.apps.googleusercontent.com';
+        const SCOPES = 'https://www.googleapis.com/auth/drive.readonly';
+
+        // ===========================================
+        // 拡張子マッピング（正確な判定用）
+        // ===========================================
+        const EXTENSION_MAP = {
+            // ドキュメント
+            'application/pdf': { ext: 'pdf', icon: '📄', label: 'PDF', color: 'bg-red-100 text-red-700' },
+            'application/msword': { ext: 'doc', icon: '📝', label: 'Word', color: 'bg-blue-100 text-blue-700' },
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { ext: 'docx', icon: '📝', label: 'Word', color: 'bg-blue-100 text-blue-700' },
+            'application/vnd.google-apps.document': { ext: 'gdoc', icon: '📄', label: 'Google Doc', color: 'bg-blue-100 text-blue-700' },
+            
+            // スプレッドシート
+            'application/vnd.ms-excel': { ext: 'xls', icon: '📊', label: 'Excel', color: 'bg-green-100 text-green-700' },
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { ext: 'xlsx', icon: '📊', label: 'Excel', color: 'bg-green-100 text-green-700' },
+            'application/vnd.google-apps.spreadsheet': { ext: 'gsheet', icon: '📊', label: 'Google Sheet', color: 'bg-green-100 text-green-700' },
+            'text/csv': { ext: 'csv', icon: '📊', label: 'CSV', color: 'bg-green-100 text-green-700' },
+            
+            // プレゼンテーション
+            'application/vnd.ms-powerpoint': { ext: 'ppt', icon: '📽️', label: 'PowerPoint', color: 'bg-orange-100 text-orange-700' },
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation': { ext: 'pptx', icon: '📽️', label: 'PowerPoint', color: 'bg-orange-100 text-orange-700' },
+            'application/vnd.google-apps.presentation': { ext: 'gslide', icon: '📽️', label: 'Google Slide', color: 'bg-orange-100 text-orange-700' },
+            
+            // アーカイブ
+            'application/zip': { ext: 'zip', icon: '🗜️', label: 'ZIP', color: 'bg-amber-100 text-amber-700' },
+            'application/x-zip-compressed': { ext: 'zip', icon: '🗜️', label: 'ZIP', color: 'bg-amber-100 text-amber-700' },
+            
+            // テキスト
+            'text/plain': { ext: 'txt', icon: '📃', label: 'Text', color: 'bg-gray-100 text-gray-700' },
+            'text/markdown': { ext: 'md', icon: '📃', label: 'Markdown', color: 'bg-gray-100 text-gray-700' },
+            'application/json': { ext: 'json', icon: '📋', label: 'JSON', color: 'bg-yellow-100 text-yellow-700' },
+            'text/html': { ext: 'html', icon: '🌐', label: 'HTML', color: 'bg-purple-100 text-purple-700' },
+            
+            // 画像
+            'image/jpeg': { ext: 'jpg', icon: '🖼️', label: 'JPEG', color: 'bg-pink-100 text-pink-700' },
+            'image/png': { ext: 'png', icon: '🖼️', label: 'PNG', color: 'bg-pink-100 text-pink-700' },
+            'image/gif': { ext: 'gif', icon: '🖼️', label: 'GIF', color: 'bg-pink-100 text-pink-700' },
+            'image/webp': { ext: 'webp', icon: '🖼️', label: 'WebP', color: 'bg-pink-100 text-pink-700' },
+            'image/svg+xml': { ext: 'svg', icon: '🖼️', label: 'SVG', color: 'bg-pink-100 text-pink-700' },
+            
+            // 動画
+            'video/mp4': { ext: 'mp4', icon: '🎬', label: 'MP4', color: 'bg-red-100 text-red-700' },
+            'video/quicktime': { ext: 'mov', icon: '🎬', label: 'MOV', color: 'bg-red-100 text-red-700' },
+            'video/webm': { ext: 'webm', icon: '🎬', label: 'WebM', color: 'bg-red-100 text-red-700' },
+            
+            // 音声
+            'audio/mpeg': { ext: 'mp3', icon: '🎵', label: 'MP3', color: 'bg-indigo-100 text-indigo-700' },
+            'audio/wav': { ext: 'wav', icon: '🎵', label: 'WAV', color: 'bg-indigo-100 text-indigo-700' },
+            
+            // フォルダ
+            'application/vnd.google-apps.folder': { ext: 'folder', icon: '📁', label: 'フォルダ', color: 'bg-yellow-100 text-yellow-700' },
+        };
+
+        // ファイル名から拡張子を正確に取得
+        function getExtensionFromFileName(fileName) {
+            if (!fileName) return '';
+            const parts = fileName.split('.');
+            if (parts.length < 2) return '';
+            return parts[parts.length - 1].toLowerCase();
+        }
+
+        // MIMEタイプとファイル名から正確な拡張子情報を取得
+        function getFileExtInfo(mimeType, fileName) {
+            // まずファイル名から拡張子を取得
+            const fileExt = getExtensionFromFileName(fileName);
+            
+            // MIMEタイプからの情報
+            const mimeInfo = EXTENSION_MAP[mimeType];
+            
+            // 拡張子から直接マッピング（MIMEが不正確な場合の補完）
+            const extMapping = {
+                'pdf': { ext: 'pdf', icon: '📄', label: 'PDF', color: 'bg-red-100 text-red-700' },
+                'doc': { ext: 'doc', icon: '📝', label: 'Word', color: 'bg-blue-100 text-blue-700' },
+                'docx': { ext: 'docx', icon: '📝', label: 'Word', color: 'bg-blue-100 text-blue-700' },
+                'xls': { ext: 'xls', icon: '📊', label: 'Excel', color: 'bg-green-100 text-green-700' },
+                'xlsx': { ext: 'xlsx', icon: '📊', label: 'Excel', color: 'bg-green-100 text-green-700' },
+                'csv': { ext: 'csv', icon: '📊', label: 'CSV', color: 'bg-green-100 text-green-700' },
+                'ppt': { ext: 'ppt', icon: '📽️', label: 'PowerPoint', color: 'bg-orange-100 text-orange-700' },
+                'pptx': { ext: 'pptx', icon: '📽️', label: 'PowerPoint', color: 'bg-orange-100 text-orange-700' },
+                'zip': { ext: 'zip', icon: '🗜️', label: 'ZIP', color: 'bg-amber-100 text-amber-700' },
+                'txt': { ext: 'txt', icon: '📃', label: 'Text', color: 'bg-gray-100 text-gray-700' },
+                'md': { ext: 'md', icon: '📃', label: 'Markdown', color: 'bg-gray-100 text-gray-700' },
+                'json': { ext: 'json', icon: '📋', label: 'JSON', color: 'bg-yellow-100 text-yellow-700' },
+                'html': { ext: 'html', icon: '🌐', label: 'HTML', color: 'bg-purple-100 text-purple-700' },
+                'htm': { ext: 'htm', icon: '🌐', label: 'HTML', color: 'bg-purple-100 text-purple-700' },
+                'jpg': { ext: 'jpg', icon: '🖼️', label: 'JPEG', color: 'bg-pink-100 text-pink-700' },
+                'jpeg': { ext: 'jpeg', icon: '🖼️', label: 'JPEG', color: 'bg-pink-100 text-pink-700' },
+                'png': { ext: 'png', icon: '🖼️', label: 'PNG', color: 'bg-pink-100 text-pink-700' },
+                'gif': { ext: 'gif', icon: '🖼️', label: 'GIF', color: 'bg-pink-100 text-pink-700' },
+                'webp': { ext: 'webp', icon: '🖼️', label: 'WebP', color: 'bg-pink-100 text-pink-700' },
+                'svg': { ext: 'svg', icon: '🖼️', label: 'SVG', color: 'bg-pink-100 text-pink-700' },
+                'mp4': { ext: 'mp4', icon: '🎬', label: 'MP4', color: 'bg-red-100 text-red-700' },
+                'mov': { ext: 'mov', icon: '🎬', label: 'MOV', color: 'bg-red-100 text-red-700' },
+                'webm': { ext: 'webm', icon: '🎬', label: 'WebM', color: 'bg-red-100 text-red-700' },
+                'mp3': { ext: 'mp3', icon: '🎵', label: 'MP3', color: 'bg-indigo-100 text-indigo-700' },
+                'wav': { ext: 'wav', icon: '🎵', label: 'WAV', color: 'bg-indigo-100 text-indigo-700' },
+            };
+            
+            // ファイル拡張子を優先（より正確）
+            if (fileExt && extMapping[fileExt]) {
+                return { ...extMapping[fileExt], actualExt: fileExt };
+            }
+            
+            // MIMEタイプから取得
+            if (mimeInfo) {
+                return { ...mimeInfo, actualExt: mimeInfo.ext };
+            }
+            
+            // 不明な場合
+            return { 
+                ext: fileExt || 'unknown', 
+                icon: '📄', 
+                label: fileExt ? fileExt.toUpperCase() : 'Unknown', 
+                color: 'bg-slate-100 text-slate-700',
+                actualExt: fileExt || 'unknown'
+            };
+        }
+
+        // ===========================================
+        // 状態管理
+        // ===========================================
+        let savedGeminiKey = '';
+        try { savedGeminiKey = localStorage.getItem('gemini_api_key') || ''; } catch (e) { }
+
+        const state = {
+            screen: 'welcome',
+            geminiApiKey: savedGeminiKey,
+            googleAccessToken: null,
+            isGoogleSignedIn: false,
+            sharedDrives: [],
+            selectedDrive: null,
+            files: [],
+            filteredFiles: [],
+            selectedFiles: [],
+            uploadedFiles: [],
+            analyzedFiles: [],
+            searchQuery: '',
+            ragStoreName: null,
+            chatHistory: [],
+            isLoading: false,
+            isLoadingFiles: false,
+            uploadProgress: null,
+            downloadedFiles: [],
+            fileContents: {},
+            exampleQuestions: [],
+            error: null,
+            // 拡張子別統計
+            extensionStats: {},
+            // プレビュー用
+            previewFile: null,
+            previewData: null,
+            // フィルタ
+            selectedExtensions: [],
+        };
+
+        let ai = null;
+        let tokenClient = null;
+
+        // ===========================================
+        // ユーティリティ
+        // ===========================================
+        function formatFileSize(bytes) {
+            if (!bytes) return '-';
+            if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+            if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return bytes + ' B';
+        }
+
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 拡張子別の統計を計算
+        function calculateExtensionStats(files) {
+            const stats = {};
+            files.forEach(f => {
+                const extInfo = getFileExtInfo(f.mimeType, f.name);
+                const ext = extInfo.actualExt;
+                if (!stats[ext]) {
+                    stats[ext] = {
+                        count: 0,
+                        totalSize: 0,
+                        icon: extInfo.icon,
+                        label: extInfo.label,
+                        color: extInfo.color,
+                        files: []
+                    };
+                }
+                stats[ext].count++;
+                stats[ext].totalSize += parseInt(f.size || 0);
+                stats[ext].files.push(f);
+            });
+            return stats;
+        }
+
+        // ===========================================
+        // ファイル内容解析関数
+        // ===========================================
+        async function parseExcelContent(arrayBuffer, fileName) {
+            try {
+                const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                let content = `【Excelファイル: ${fileName}】\n`;
+                content += `シート数: ${workbook.SheetNames.length}\n\n`;
+
+                workbook.SheetNames.forEach((sheetName, idx) => {
+                    const sheet = workbook.Sheets[sheetName];
+                    const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+                    content += `=== シート${idx + 1}: ${sheetName} ===\n`;
+                    content += `行数: ${jsonData.length}\n`;
+                    jsonData.slice(0, 100).forEach((row, rowIdx) => {
+                        if (row.some(cell => cell !== '')) {
+                            content += `行${rowIdx + 1}: ${row.join(' | ')}\n`;
+                        }
+                    });
+                    if (jsonData.length > 100) {
+                        content += `... (以降${jsonData.length - 100}行省略)\n`;
+                    }
+                    content += '\n';
+                });
+                return content;
+            } catch (e) {
+                return `【Excel解析エラー】${fileName}: ${e.message}`;
+            }
+        }
+
+        async function parsePdfContent(arrayBuffer, fileName) {
+            try {
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                let content = `【PDFファイル: ${fileName}】\n`;
+                content += `ページ数: ${pdf.numPages}\n\n`;
+
+                for (let i = 1; i <= Math.min(pdf.numPages, 50); i++) {
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map(item => item.str).join(' ');
+                    content += `=== ページ ${i} ===\n${pageText}\n\n`;
+                }
+                if (pdf.numPages > 50) {
+                    content += `... (以降${pdf.numPages - 50}ページ省略)\n`;
+                }
+                return content;
+            } catch (e) {
+                return `【PDF解析エラー】${fileName}: ${e.message}`;
+            }
+        }
+
+        async function parseTextContent(arrayBuffer, fileName) {
+            try {
+                const decoder = new TextDecoder('utf-8');
+                let text = decoder.decode(arrayBuffer);
+                if (text.includes('�')) {
+                    const sjisDecoder = new TextDecoder('shift-jis');
+                    text = sjisDecoder.decode(arrayBuffer);
+                }
+                return `【テキストファイル: ${fileName}】\n\n${text}`;
+            } catch (e) {
+                return `【テキスト解析エラー】${fileName}: ${e.message}`;
+            }
+        }
+
+        async function parseZipContent(arrayBuffer, fileName) {
+            try {
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                let content = `【ZIPファイル: ${fileName}】\n`;
+                const fileList = Object.keys(zip.files);
+                content += `含まれるファイル数: ${fileList.length}\n\n`;
+
+                const extStats = {};
+                for (const name of fileList) {
+                    const file = zip.files[name];
+                    if (file.dir) continue;
+                    const ext = getExtensionFromFileName(name) || 'other';
+                    extStats[ext] = (extStats[ext] || 0) + 1;
+                }
+                
+                content += `=== 拡張子別内訳 ===\n`;
+                Object.entries(extStats).sort((a, b) => b[1] - a[1]).forEach(([ext, count]) => {
+                    content += `${ext.toUpperCase()}: ${count}件\n`;
+                });
+                content += `\n=== ファイル一覧 ===\n`;
+                fileList.slice(0, 50).forEach(name => {
+                    if (!zip.files[name].dir) {
+                        content += `・${name}\n`;
+                    }
+                });
+                if (fileList.length > 50) {
+                    content += `... (以降${fileList.length - 50}件省略)\n`;
+                }
+                return content;
+            } catch (e) {
+                return `【ZIP解析エラー】${fileName}: ${e.message}`;
+            }
+        }
+
+        async function parseFileContent(arrayBuffer, fileName, mimeType) {
+            const extInfo = getFileExtInfo(mimeType, fileName);
+            const ext = extInfo.actualExt;
+
+            if (['xlsx', 'xls'].includes(ext)) {
+                return await parseExcelContent(arrayBuffer, fileName);
+            } else if (ext === 'csv') {
+                return await parseTextContent(arrayBuffer, fileName);
+            } else if (ext === 'pdf') {
+                return await parsePdfContent(arrayBuffer, fileName);
+            } else if (ext === 'zip') {
+                return await parseZipContent(arrayBuffer, fileName);
+            } else if (['txt', 'md', 'json', 'html', 'htm', 'xml'].includes(ext)) {
+                return await parseTextContent(arrayBuffer, fileName);
+            } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) {
+                return `【画像ファイル: ${fileName}】\nサイズ: ${formatFileSize(arrayBuffer.byteLength)}\n形式: ${extInfo.label}`;
+            } else if (['mp4', 'mov', 'webm', 'avi'].includes(ext)) {
+                return `【動画ファイル: ${fileName}】\nサイズ: ${formatFileSize(arrayBuffer.byteLength)}\n形式: ${extInfo.label}`;
+            } else if (['mp3', 'wav', 'ogg'].includes(ext)) {
+                return `【音声ファイル: ${fileName}】\nサイズ: ${formatFileSize(arrayBuffer.byteLength)}\n形式: ${extInfo.label}`;
+            } else {
+                return `【ファイル: ${fileName}】\n(このファイル形式のテキスト抽出は未対応です)\nサイズ: ${formatFileSize(arrayBuffer.byteLength)}`;
+            }
+        }
+
+        // ===========================================
+        // Google OAuth & Drive API
+        // ===========================================
+        function initializeGoogleAuth() {
+            return new Promise((resolve, reject) => {
+                if (!GOOGLE_CLIENT_ID) {
+                    reject(new Error('GOOGLE_CLIENT_ID が設定されていません'));
+                    return;
+                }
+                try {
+                    tokenClient = google.accounts.oauth2.initTokenClient({
+                        client_id: GOOGLE_CLIENT_ID,
+                        scope: SCOPES,
+                        callback: (response) => {
+                            if (response.error) {
+                                reject(new Error(response.error));
+                                return;
+                            }
+                            state.googleAccessToken = response.access_token;
+                            state.isGoogleSignedIn = true;
+                            resolve(response);
+                        },
+                    });
+                    resolve();
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        }
+
+        function signInWithGoogle() {
+            return new Promise((resolve, reject) => {
+                if (!tokenClient) {
+                    reject(new Error('Google Auth not initialized'));
+                    return;
+                }
+                tokenClient.callback = (response) => {
+                    if (response.error) {
+                        reject(new Error(response.error));
+                        return;
+                    }
+                    state.googleAccessToken = response.access_token;
+                    state.isGoogleSignedIn = true;
+                    resolve(response);
+                };
+                tokenClient.requestAccessToken({ prompt: 'consent' });
+            });
+        }
+
+        async function fetchSharedDrives() {
+            const response = await fetch('https://www.googleapis.com/drive/v3/drives?pageSize=100', {
+                headers: { 'Authorization': `Bearer ${state.googleAccessToken}` }
+            });
+            if (!response.ok) throw new Error('Failed to fetch shared drives');
+            const data = await response.json();
+            return data.drives || [];
+        }
+
+        async function fetchDriveFiles(driveId, pageToken = null) {
+            const params = new URLSearchParams({
+                q: 'trashed = false',
+                pageSize: '200',
+                fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, webViewLink, description)',
+                orderBy: 'modifiedTime desc',
+                supportsAllDrives: 'true',
+                includeItemsFromAllDrives: 'true',
+            });
+
+            if (driveId) {
+                params.append('driveId', driveId);
+                params.append('corpora', 'drive');
+            }
+            if (pageToken) params.append('pageToken', pageToken);
+
+            const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+                headers: { 'Authorization': `Bearer ${state.googleAccessToken}` }
+            });
+            if (!response.ok) throw new Error('Failed to fetch files');
+            return await response.json();
+        }
+
+        // ファイルダウンロード（ローカルPCへ保存）
+        async function downloadFileToLocal(file) {
+            const exportFormats = {
+                'application/vnd.google-apps.document': 'application/pdf',
+                'application/vnd.google-apps.spreadsheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.google-apps.presentation': 'application/pdf',
+            };
+
+            let url;
+            let targetMimeType = file.mimeType;
+            let fileName = file.name;
+
+            if (exportFormats[file.mimeType]) {
+                targetMimeType = exportFormats[file.mimeType];
+                url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=${encodeURIComponent(targetMimeType)}`;
+                // Google形式の場合は拡張子を追加
+                const extMap = {
+                    'application/pdf': '.pdf',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+                };
+                if (!fileName.includes('.') && extMap[targetMimeType]) {
+                    fileName += extMap[targetMimeType];
+                }
+            } else {
+                url = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+            }
+
+            const response = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${state.googleAccessToken}` }
+            });
+
+            if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+
+            const blob = await response.blob();
+            
+            // ブラウザでダウンロード
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(downloadUrl);
+            
+            return { success: true, fileName };
+        }
+
+        // ファイルのプレビューデータを取得
+        async function getFilePreview(file) {
+            const exportFormats = {
+                'application/vnd.google-apps.document': 'application/pdf',
+                'application/vnd.google-apps.spreadsheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.google-apps.presentation': 'application/pdf',
+            };
+
+            let url;
+            let targetMimeType = file.mimeType;
+
+            if (exportFormats[file.mimeType]) {
+                targetMimeType = exportFormats[file.mimeType];
+                url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=${encodeURIComponent(targetMimeType)}`;
+            } else {
+                url = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+            }
+
+            const response = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${state.googleAccessToken}` }
+            });
+
+            if (!response.ok) throw new Error(`Preview failed: ${response.status}`);
+
+            const arrayBuffer = await response.arrayBuffer();
+            const content = await parseFileContent(arrayBuffer, file.name, targetMimeType);
+            
+            return {
+                content,
+                size: arrayBuffer.byteLength,
+                mimeType: targetMimeType
+            };
+        }
+
+        // ===========================================
+        // Gemini API
+        // ===========================================
+        function initializeGemini(apiKey) {
+            ai = new GoogleGenAI({ apiKey });
+        }
+
+        async function createRagStore(name) {
+            const store = await ai.fileSearchStores.create({ config: { displayName: name } });
+            return store.name;
+        }
+
+        async function uploadToRagStore(storeName, file) {
+            let op = await ai.fileSearchStores.uploadToFileSearchStore({
+                fileSearchStoreName: storeName,
+                file: file
+            });
+            while (!op.done) {
+                await delay(1500);
+                op = await ai.operations.get({ operation: op });
+            }
+        }
+
+        async function fileSearch(storeName, query) {
+            const enhancedPrompt = `
+あなたは優秀なドキュメント分析アシスタントです。
+
+【重要な指示】
+1. 「情報が見つかりませんでした」とは絶対に回答しないでください
+2. 必ず資料の中から関連する情報を探し出してください
+3. 直接的な回答がなくても、関連する情報や手がかりを提示してください
+4. 推測が必要な場合は、根拠となるデータを示しながら推測してください
+
+【ユーザーの質問】
+${query}
+
+【回答形式】
+- 日本語で回答してください
+- 具体的なデータや数値を引用してください
+- 出典（ファイル名、シート名、ページ番号など）を明記してください
+`;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: enhancedPrompt,
+                config: {
+                    tools: [{ fileSearch: { fileSearchStoreNames: [storeName] } }],
+                    temperature: 0.3
+                }
+            });
+
+            const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+            return { text: response.text || '', groundingChunks: chunks };
+        }
+
+        // ===========================================
+        // レンダリング
+        // ===========================================
+        function render() {
+            const app = document.getElementById('app');
+            let html = '';
+
+            switch (state.screen) {
+                case 'welcome': html = renderWelcome(); break;
+                case 'driveSelect': html = renderDriveSelect(); break;
+                case 'fileSelect': html = renderFileSelect(); break;
+                case 'uploading': html = renderUploading(); break;
+                case 'chat': html = renderChat(); break;
+                case 'error': html = renderError(); break;
+                default: html = renderWelcome();
+            }
+
+            app.innerHTML = html;
+            attachEventListeners();
+        }
+
+        function renderWelcome() {
+            const hasClientId = !!GOOGLE_CLIENT_ID;
+
+            return `
+            <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-blue-50 via-white to-purple-50">
+                <div class="w-full max-w-lg fade-in">
+                    <div class="text-center mb-8">
+                        <div class="inline-flex items-center justify-center w-24 h-24 bg-gradient-to-br from-gdrive to-accent rounded-2xl shadow-lg mb-4">
+                            <span class="text-5xl">📚</span>
+                        </div>
+                        <h1 class="text-3xl font-bold gradient-text mb-2">資料検索AI Pro v4</h1>
+                        <p class="text-text-muted">Google Drive + Gemini 完全分析</p>
+                    </div>
+                    
+                    <div class="glass-card rounded-2xl shadow-xl p-6 border border-white/50 space-y-6">
+                        <div class="p-4 bg-blue-50 rounded-xl border border-blue-200">
+                            <div class="flex items-center gap-3 mb-3">
+                                <span class="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center font-bold">1</span>
+                                <h3 class="font-semibold">Gemini API キー</h3>
+                                ${state.geminiApiKey ? '<span class="text-success text-xs">✔</span>' : ''}
+                            </div>
+                            <input type="password" id="geminiKeyInput" value="${state.geminiApiKey}" 
+                                placeholder="AIza..." 
+                                class="w-full px-4 py-3 border border-border-light rounded-xl focus:ring-2 focus:ring-primary outline-none"/>
+                            <p class="text-xs text-text-muted mt-2">
+                                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-primary hover:underline">Google AI Studio</a> で取得
+                            </p>
+                        </div>
+                        
+                        <div class="p-4 bg-green-50 rounded-xl border border-green-200">
+                            <div class="flex items-center gap-3 mb-3">
+                                <span class="w-8 h-8 bg-green-500 text-white rounded-full flex items-center justify-center font-bold">2</span>
+                                <h3 class="font-semibold">Google Drive 接続</h3>
+                                ${state.isGoogleSignedIn ? '<span class="text-success text-xs">✔</span>' : ''}
+                            </div>
+                            
+                            ${!hasClientId ? `
+                            <div class="bg-amber-100 border border-amber-300 rounded-lg p-3 text-sm text-amber-800 mb-3">
+                                <p class="font-semibold">⚠️ OAuth設定が必要</p>
+                                <p class="mt-1">HTMLの <code class="bg-white px-1 rounded">GOOGLE_CLIENT_ID</code> を設定してください</p>
+                            </div>
+                            ` : ''}
+                            
+                            <button id="googleSignInBtn" 
+                                class="w-full py-3 bg-gradient-to-r from-gdrive to-green-500 text-white font-semibold rounded-xl ${!hasClientId ? 'opacity-50 cursor-not-allowed' : ''}"
+                                ${!hasClientId ? 'disabled' : ''}>
+                                ${state.isGoogleSignedIn ? '✔ 接続済み' : 'Google Drive に接続'}
+                            </button>
+                        </div>
+                        
+                        <button id="startBtn" 
+                            class="w-full py-4 bg-gradient-to-r from-primary to-accent text-white font-bold text-lg rounded-xl ${!state.geminiApiKey || !state.isGoogleSignedIn ? 'opacity-50 cursor-not-allowed' : ''}"
+                            ${!state.geminiApiKey || !state.isGoogleSignedIn ? 'disabled' : ''}>
+                            🚀 共有ドライブを選択
+                        </button>
+                    </div>
+                    
+                    <div class="mt-6 p-4 bg-white/80 rounded-xl text-sm">
+                        <p class="font-semibold mb-2">✨ v4の新機能:</p>
+                        <ul class="space-y-1 text-text-muted">
+                            <li>📋 <strong>正確な拡張子表示</strong> - MIMEタイプ+ファイル名から判定</li>
+                            <li>📊 <strong>拡張子別集計</strong> - ファイル種別ごとの統計表示</li>
+                            <li>💾 <strong>個別ダウンロード</strong> - PCにファイル保存</li>
+                            <li>👁️ <strong>プレビュー機能</strong> - ダウンロード前に内容確認</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function renderDriveSelect() {
+            return `
+            <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-blue-50 via-white to-purple-50">
+                <div class="w-full max-w-2xl fade-in">
+                    <div class="text-center mb-8">
+                        <h1 class="text-2xl font-bold mb-2">📁 共有ドライブを選択</h1>
+                    </div>
+                    
+                    ${state.isLoading ? `
+                    <div class="text-center py-12">
+                        <div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                        <p>読み込み中...</p>
+                    </div>
+                    ` : `
+                    <div class="glass-card rounded-2xl shadow-xl p-6">
+                        ${state.sharedDrives.length === 0 ? `
+                        <div class="text-center py-8 text-text-muted">
+                            <p class="text-4xl mb-4">🔭</p>
+                            <p>共有ドライブが見つかりません</p>
+                        </div>
+                        ` : `
+                        <div class="grid gap-3">
+                            ${state.sharedDrives.map(drive => `
+                            <button class="driveBtn w-full p-4 bg-white hover:bg-blue-50 border hover:border-primary rounded-xl text-left flex items-center gap-4" data-id="${drive.id}" data-name="${escapeHtml(drive.name)}">
+                                <span class="text-3xl">📁</span>
+                                <div>
+                                    <p class="font-semibold">${escapeHtml(drive.name)}</p>
+                                    <p class="text-xs text-text-muted">ID: ${drive.id}</p>
+                                </div>
+                            </button>
+                            `).join('')}
+                        </div>
+                        `}
+                        <div class="mt-4 pt-4 border-t">
+                            <button id="backToWelcome" class="text-text-muted hover:text-text-main text-sm">← 戻る</button>
+                        </div>
+                    </div>
+                    `}
+                </div>
+            </div>`;
+        }
+
+        function renderFileSelect() {
+            const selectedCount = state.selectedFiles.length + state.uploadedFiles.length;
+            const stats = state.extensionStats;
+
+            return `
+            <div class="min-h-screen flex flex-col">
+                <header class="bg-gradient-to-r from-gdrive to-accent text-white p-4 shadow-lg">
+                    <div class="max-w-6xl mx-auto">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-3">
+                                <button id="backToDrives" class="p-2 hover:bg-white/20 rounded-lg">←</button>
+                                <div>
+                                    <h1 class="text-xl font-bold">${escapeHtml(state.selectedDrive?.name || '')}</h1>
+                                    <p class="text-sm text-blue-100">${state.files.length}件のファイル</p>
+                                </div>
+                            </div>
+                            <button id="refreshFiles" class="p-2 hover:bg-white/20 rounded-lg">🔄</button>
+                        </div>
+                        
+                        <div class="flex gap-2">
+                            <input type="text" id="searchInput" value="${escapeHtml(state.searchQuery)}" 
+                                placeholder="🔍 ファイル名で検索..." 
+                                class="flex-1 px-4 py-3 text-text-main rounded-xl"/>
+                            <button id="searchBtn" class="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl">検索</button>
+                        </div>
+                    </div>
+                </header>
+                
+                <main class="flex-1 p-4 overflow-y-auto custom-scrollbar pb-32">
+                    <div class="max-w-6xl mx-auto">
+                        
+                        <!-- 拡張子別統計パネル -->
+                        <div class="bg-white rounded-xl border p-4 mb-4">
+                            <h3 class="font-semibold mb-3">📊 拡張子別ファイル数</h3>
+                            <div class="flex flex-wrap gap-2">
+                                ${Object.entries(stats).sort((a, b) => b[1].count - a[1].count).map(([ext, data]) => `
+                                <button class="extFilter px-3 py-2 rounded-lg border-2 transition-all ${state.selectedExtensions.includes(ext) ? 'border-primary bg-primary/10' : 'border-gray-200 hover:border-primary/50'}" data-ext="${ext}">
+                                    <div class="flex items-center gap-2">
+                                        <span>${data.icon}</span>
+                                        <span class="ext-badge text-xs ${data.color} px-2 py-0.5 rounded">.${ext}</span>
+                                        <span class="font-bold">${data.count}</span>
+                                    </div>
+                                    <div class="text-xs text-text-muted mt-1">${formatFileSize(data.totalSize)}</div>
+                                </button>
+                                `).join('')}
+                            </div>
+                            ${state.selectedExtensions.length > 0 ? `
+                            <div class="mt-3 flex items-center gap-2">
+                                <span class="text-sm text-text-muted">フィルタ中:</span>
+                                ${state.selectedExtensions.map(ext => `
+                                <span class="px-2 py-1 bg-primary/10 text-primary rounded text-sm">.${ext}</span>
+                                `).join('')}
+                                <button id="clearExtFilter" class="text-sm text-danger hover:underline">クリア</button>
+                            </div>
+                            ` : ''}
+                        </div>
+                        
+                        <!-- ローカルアップロード -->
+                        <div class="bg-blue-50 rounded-xl p-4 border border-blue-200 mb-4">
+                            <h3 class="font-semibold mb-2">📤 ローカルファイルを追加</h3>
+                            <div id="dropZone" class="border-2 border-dashed border-blue-300 rounded-lg p-4 text-center cursor-pointer hover:bg-blue-100/50 bg-white/70">
+                                ${state.uploadedFiles.length > 0 ? `
+                                <div class="space-y-2 mb-2 text-left">
+                                    ${state.uploadedFiles.map((f, i) => {
+                                        const extInfo = getFileExtInfo(f.type, f.name);
+                                        return `
+                                        <div class="flex items-center justify-between bg-blue-100 rounded p-2 text-sm">
+                                            <div class="flex items-center gap-2">
+                                                <span>${extInfo.icon}</span>
+                                                <span class="ext-badge text-xs ${extInfo.color} px-1 rounded">.${extInfo.actualExt}</span>
+                                                <span class="truncate">${escapeHtml(f.name)}</span>
+                                            </div>
+                                            <button class="removeFile text-red-500 px-2" data-idx="${i}">✕</button>
+                                        </div>`;
+                                    }).join('')}
+                                </div>
+                                ` : ''}
+                                <p class="text-text-muted text-sm">クリックまたはドラッグ&ドロップ</p>
+                                <input type="file" id="fileInput" multiple class="hidden"/>
+                            </div>
+                        </div>
+                        
+                        <!-- ファイルリスト -->
+                        ${state.isLoadingFiles ? `
+                        <div class="text-center py-12">
+                            <div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                            <p>ファイル読み込み中...</p>
+                        </div>
+                        ` : `
+                        <div class="bg-white rounded-xl border p-4">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-semibold">📁 Driveファイル (${state.filteredFiles.length}件)</h3>
+                                <div class="flex gap-2">
+                                    <button id="selectAll" class="text-xs px-3 py-1 bg-primary text-white rounded-full">すべて選択</button>
+                                    <button id="deselectAll" class="text-xs px-3 py-1 bg-gray-200 text-gray-700 rounded-full">選択解除</button>
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[50vh] overflow-y-auto custom-scrollbar">
+                                ${state.filteredFiles.map(f => {
+                                    const isSelected = state.selectedFiles.includes(f.id);
+                                    const extInfo = getFileExtInfo(f.mimeType, f.name);
+                                    const sizeText = f.size ? formatFileSize(parseInt(f.size)) : 'サイズ不明';
+                                    const modDate = f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString('ja-JP') : '';
+
+                                    return `
+                                    <div class="fileCard p-3 border-2 rounded-xl cursor-pointer transition-all hover:shadow-md ${isSelected ? 'border-primary bg-primary/5 shadow-md' : 'border-gray-200 hover:border-primary/50'}" data-id="${f.id}">
+                                        <div class="flex items-start gap-3">
+                                            <input type="checkbox" ${isSelected ? 'checked' : ''} class="mt-1 w-4 h-4"/>
+                                            <div class="text-2xl">${extInfo.icon}</div>
+                                            <div class="flex-1 min-w-0">
+                                                <p class="text-sm font-semibold truncate mb-1" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</p>
+                                                
+                                                <!-- 拡張子バッジ -->
+                                                <div class="flex flex-wrap gap-1 mb-1">
+                                                    <span class="ext-badge text-xs px-2 py-0.5 rounded border ${extInfo.color}">.${extInfo.actualExt}</span>
+                                                    <span class="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">${extInfo.label}</span>
+                                                </div>
+                                                
+                                                <!-- サイズと日付 -->
+                                                <div class="flex items-center gap-2 text-xs text-text-muted">
+                                                    <span>${sizeText}</span>
+                                                    ${modDate ? `<span>• ${modDate}</span>` : ''}
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- アクションボタン -->
+                                            <div class="flex flex-col gap-1">
+                                                <button class="previewBtn p-1 hover:bg-blue-100 rounded text-sm" data-id="${f.id}" title="プレビュー">👁️</button>
+                                                <button class="downloadBtn p-1 hover:bg-green-100 rounded text-sm" data-id="${f.id}" title="ダウンロード">💾</button>
+                                            </div>
+                                        </div>
+                                    </div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+                        `}
+                    </div>
+                </main>
+                
+                <footer class="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur border-t p-4 shadow-lg">
+                    <div class="max-w-6xl mx-auto flex items-center justify-between">
+                        <div class="text-sm text-text-muted">
+                            <span>選択: <strong>${selectedCount}件</strong></span>
+                            ${selectedCount > 0 ? `
+                            <button id="downloadSelected" class="ml-4 px-3 py-1 bg-green-500 text-white rounded-lg text-xs">💾 選択をダウンロード</button>
+                            ` : ''}
+                        </div>
+                        <div class="flex gap-3">
+                            <button id="resetBtn" class="py-3 px-6 bg-gray-100 hover:bg-gray-200 rounded-xl">リセット</button>
+                            <button id="confirmBtn" 
+                                class="py-3 px-8 bg-gradient-to-r from-primary to-accent text-white font-bold rounded-xl ${selectedCount === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
+                                ${selectedCount === 0 ? 'disabled' : ''}>
+                                ${selectedCount > 0 ? `${selectedCount}件をAI分析` : 'ファイルを選択'}
+                            </button>
+                        </div>
+                    </div>
+                </footer>
+            </div>`;
+        }
+
+        function renderUploading() {
+            const p = state.uploadProgress || { current: 0, total: 1, message: '準備中...', files: [] };
+            const percent = Math.round((p.current / p.total) * 100);
+
+            return `
+            <div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-purple-50 p-4">
+                <div class="w-full max-w-2xl fade-in">
+                    <div class="text-center mb-8">
+                        <div class="w-24 h-24 relative mx-auto mb-6">
+                            <div class="absolute inset-0 border-4 border-primary/20 rounded-full"></div>
+                            <div class="absolute inset-0 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <span class="text-2xl font-bold text-primary">${percent}%</span>
+                            </div>
+                        </div>
+                        <h2 class="text-xl font-bold mb-2">${p.message}</h2>
+                        <div class="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+                            <div class="h-full bg-gradient-to-r from-primary to-accent transition-all" style="width: ${percent}%"></div>
+                        </div>
+                        <p class="mt-2 text-text-muted">${p.current} / ${p.total}</p>
+                        ${p.fileName ? `<p class="mt-1 text-sm text-primary truncate">${escapeHtml(p.fileName)}</p>` : ''}
+                    </div>
+                    
+                    ${state.downloadedFiles.length > 0 ? `
+                    <div class="bg-white rounded-xl p-4 shadow-lg max-h-64 overflow-y-auto custom-scrollbar">
+                        <h3 class="font-semibold mb-3">✅ 処理済みファイル (${state.downloadedFiles.length}件)</h3>
+                        <div class="space-y-2">
+                            ${state.downloadedFiles.map(f => `
+                            <div class="p-2 bg-green-50 rounded-lg text-sm">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-green-500">✔</span>
+                                    <span class="font-medium truncate">${escapeHtml(f.name)}</span>
+                                    <span class="ext-badge text-xs px-1 rounded bg-gray-100">.${f.ext}</span>
+                                </div>
+                            </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    ` : ''}
+                </div>
+            </div>`;
+        }
+
+        function renderChat() {
+            return `
+            <div class="min-h-screen flex flex-col bg-gray-50">
+                <header class="bg-white border-b p-4 shadow-sm">
+                    <div class="max-w-4xl mx-auto flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <span class="text-2xl">🤖</span>
+                            <div>
+                                <h1 class="text-xl font-bold">資料検索AI Pro v4</h1>
+                                <p class="text-sm text-text-muted">${state.analyzedFiles.length}件の資料を分析中</p>
+                            </div>
+                        </div>
+                        <button id="newChatBtn" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg">🔄 新規</button>
+                    </div>
+                </header>
+                
+                <!-- 分析済みファイル情報 -->
+                <div class="bg-blue-50 border-b border-blue-200">
+                    <div class="max-w-4xl mx-auto p-3">
+                        <details class="text-sm">
+                            <summary class="cursor-pointer font-semibold text-blue-700">📂 分析対象ファイル (${state.analyzedFiles.length}件)</summary>
+                            <div class="mt-2 space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
+                                ${state.analyzedFiles.map(f => `
+                                <div class="bg-white rounded-lg p-2 flex items-center gap-2">
+                                    <span class="ext-badge text-xs px-2 py-0.5 rounded ${f.extInfo?.color || 'bg-gray-100'}">.${f.ext}</span>
+                                    <span class="font-medium truncate">${escapeHtml(f.name)}</span>
+                                </div>
+                                `).join('')}
+                            </div>
+                        </details>
+                    </div>
+                </div>
+                
+                <main class="flex-1 overflow-y-auto custom-scrollbar pb-32">
+                    <div class="max-w-4xl mx-auto p-4 space-y-4">
+                        ${state.chatHistory.length === 0 ? `
+                        <div class="text-center py-8 fade-in">
+                            <div class="w-20 h-20 bg-gradient-to-br from-primary/10 to-accent/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                <span class="text-4xl">💡</span>
+                            </div>
+                            <h2 class="text-xl font-bold mb-2">準備完了</h2>
+                            <p class="text-text-muted mb-4">資料について質問してください</p>
+                        </div>
+                        ` : ''}
+                        
+                        ${state.chatHistory.map(msg => `
+                        <div class="flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} fade-in">
+                            <div class="max-w-3xl ${msg.role === 'user' ? 'bg-gradient-to-r from-primary to-accent text-white' : 'bg-white shadow-sm'} px-5 py-4 rounded-2xl">
+                                <div class="whitespace-pre-wrap">${msg.role === 'user' ? escapeHtml(msg.content) : formatResponse(msg.content)}</div>
+                                ${msg.sources && msg.sources.length > 0 ? `
+                                <div class="mt-3 pt-3 border-t ${msg.role === 'user' ? 'border-white/20' : 'border-gray-200'}">
+                                    <p class="text-xs font-semibold mb-2">📚 参照した出典:</p>
+                                    ${msg.sources.slice(0, 5).map((s, i) => `
+                                    <details class="text-xs mb-1">
+                                        <summary class="cursor-pointer ${msg.role === 'user' ? 'text-white/80' : 'text-primary'}">出典 ${i + 1}</summary>
+                                        <div class="mt-1 p-2 ${msg.role === 'user' ? 'bg-white/10' : 'bg-gray-50'} rounded text-xs max-h-32 overflow-y-auto">${escapeHtml(s).substring(0, 500)}...</div>
+                                    </details>
+                                    `).join('')}
+                                </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                        `).join('')}
+                        
+                        ${state.isLoading ? `
+                        <div class="flex justify-start fade-in">
+                            <div class="bg-white shadow-sm px-5 py-4 rounded-2xl flex items-center gap-3">
+                                <div class="flex gap-1">
+                                    <div class="w-2 h-2 bg-primary rounded-full animate-bounce"></div>
+                                    <div class="w-2 h-2 bg-primary rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                                    <div class="w-2 h-2 bg-primary rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                                </div>
+                                <span class="text-text-muted">資料を分析中...</span>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </main>
+                
+                <footer class="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur border-t p-4">
+                    <div class="max-w-4xl mx-auto">
+                        <form id="chatForm" class="flex gap-3">
+                            <input type="text" id="chatInput" placeholder="資料について質問（例: この提案書の要点を教えて）" 
+                                class="flex-1 px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary outline-none"
+                                ${state.isLoading ? 'disabled' : ''}/>
+                            <button type="submit" class="p-3 bg-gradient-to-r from-primary to-accent text-white rounded-xl ${state.isLoading ? 'opacity-50' : ''}" ${state.isLoading ? 'disabled' : ''}>
+                                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                                </svg>
+                            </button>
+                        </form>
+                    </div>
+                </footer>
+            </div>`;
+        }
+
+        function formatResponse(text) {
+            return escapeHtml(text)
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>');
+        }
+
+        function renderError() {
+            return `
+            <div class="min-h-screen flex items-center justify-center p-4">
+                <div class="text-center fade-in">
+                    <div class="text-6xl mb-4">⚠️</div>
+                    <h2 class="text-2xl font-bold mb-2 text-red-600">エラー</h2>
+                    <p class="text-text-muted mb-6 max-w-md">${escapeHtml(state.error)}</p>
+                    <button id="retryBtn" class="px-6 py-3 bg-primary text-white rounded-xl">再試行</button>
+                </div>
+            </div>`;
+        }
+
+        // ===========================================
+        // プレビューモーダル
+        // ===========================================
+        function showPreviewModal(file, previewData) {
+            state.previewFile = file;
+            state.previewData = previewData;
+            
+            const modal = document.getElementById('previewModal');
+            const title = document.getElementById('previewTitle');
+            const meta = document.getElementById('previewMeta');
+            const content = document.getElementById('previewContent');
+            
+            const extInfo = getFileExtInfo(file.mimeType, file.name);
+            
+            title.innerHTML = `${extInfo.icon} ${escapeHtml(file.name)}`;
+            meta.innerHTML = `
+                <span class="ext-badge px-2 py-0.5 rounded ${extInfo.color}">.${extInfo.actualExt}</span>
+                <span class="ml-2">${formatFileSize(previewData.size)}</span>
+            `;
+            
+            // 内容をフォーマットして表示
+            const formattedContent = previewData.content
+                .split('\n')
+                .map(line => {
+                    if (line.startsWith('===') || line.startsWith('【')) {
+                        return `<div class="font-bold text-primary mt-3 mb-1">${escapeHtml(line)}</div>`;
+                    }
+                    return `<div class="text-sm">${escapeHtml(line)}</div>`;
+                })
+                .join('');
+            
+            content.innerHTML = `
+                <div class="bg-gray-50 rounded-lg p-4 font-mono text-xs leading-relaxed max-h-[60vh] overflow-auto custom-scrollbar">
+                    ${formattedContent}
+                </div>
+            `;
+            
+            modal.classList.remove('hidden');
+        }
+
+        function hidePreviewModal() {
+            document.getElementById('previewModal').classList.add('hidden');
+            state.previewFile = null;
+            state.previewData = null;
+        }
+
+        // ===========================================
+        // イベントリスナー
+        // ===========================================
+        function attachEventListeners() {
+            // Welcome画面
+            const geminiKeyInput = document.getElementById('geminiKeyInput');
+            if (geminiKeyInput) {
+                geminiKeyInput.addEventListener('input', e => {
+                    state.geminiApiKey = e.target.value;
+                    try { localStorage.setItem('gemini_api_key', state.geminiApiKey); } catch (err) { }
+                    render();
+                });
+            }
+
+            const googleSignInBtn = document.getElementById('googleSignInBtn');
+            if (googleSignInBtn) googleSignInBtn.addEventListener('click', handleGoogleSignIn);
+
+            const startBtn = document.getElementById('startBtn');
+            if (startBtn) startBtn.addEventListener('click', handleStart);
+
+            // ドライブ選択
+            document.querySelectorAll('.driveBtn').forEach(btn => {
+                btn.addEventListener('click', () => handleSelectDrive(btn.dataset.id, btn.dataset.name));
+            });
+
+            const backToWelcome = document.getElementById('backToWelcome');
+            if (backToWelcome) backToWelcome.addEventListener('click', () => { state.screen = 'welcome'; render(); });
+
+            const backToDrives = document.getElementById('backToDrives');
+            if (backToDrives) backToDrives.addEventListener('click', () => { state.screen = 'driveSelect'; render(); });
+
+            const refreshFiles = document.getElementById('refreshFiles');
+            if (refreshFiles) refreshFiles.addEventListener('click', loadDriveFiles);
+
+            // 検索
+            const searchInput = document.getElementById('searchInput');
+            const searchBtn = document.getElementById('searchBtn');
+            if (searchInput) searchInput.addEventListener('keypress', e => { if (e.key === 'Enter') handleSearch(); });
+            if (searchBtn) searchBtn.addEventListener('click', handleSearch);
+
+            // 拡張子フィルタ
+            document.querySelectorAll('.extFilter').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const ext = btn.dataset.ext;
+                    const idx = state.selectedExtensions.indexOf(ext);
+                    if (idx === -1) {
+                        state.selectedExtensions.push(ext);
+                    } else {
+                        state.selectedExtensions.splice(idx, 1);
+                    }
+                    applyFilters();
+                    render();
+                });
+            });
+
+            const clearExtFilter = document.getElementById('clearExtFilter');
+            if (clearExtFilter) {
+                clearExtFilter.addEventListener('click', () => {
+                    state.selectedExtensions = [];
+                    applyFilters();
+                    render();
+                });
+            }
+
+            // ファイル選択
+            const selectAll = document.getElementById('selectAll');
+            if (selectAll) {
+                selectAll.addEventListener('click', () => {
+                    state.filteredFiles.forEach(f => {
+                        if (!state.selectedFiles.includes(f.id)) state.selectedFiles.push(f.id);
+                    });
+                    render();
+                });
+            }
+
+            const deselectAll = document.getElementById('deselectAll');
+            if (deselectAll) {
+                deselectAll.addEventListener('click', () => {
+                    state.selectedFiles = [];
+                    render();
+                });
+            }
+
+            document.querySelectorAll('.fileCard').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    // ボタンクリックは除外
+                    if (e.target.closest('.previewBtn') || e.target.closest('.downloadBtn')) return;
+                    
+                    const id = el.dataset.id;
+                    const idx = state.selectedFiles.indexOf(id);
+                    if (idx === -1) state.selectedFiles.push(id);
+                    else state.selectedFiles.splice(idx, 1);
+                    render();
+                });
+            });
+
+            // プレビューボタン
+            document.querySelectorAll('.previewBtn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const fileId = btn.dataset.id;
+                    const file = state.files.find(f => f.id === fileId);
+                    if (!file) return;
+                    
+                    btn.innerHTML = '⏳';
+                    try {
+                        const previewData = await getFilePreview(file);
+                        showPreviewModal(file, previewData);
+                    } catch (err) {
+                        alert('プレビュー取得エラー: ' + err.message);
+                    }
+                    btn.innerHTML = '👁️';
+                });
+            });
+
+            // ダウンロードボタン
+            document.querySelectorAll('.downloadBtn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const fileId = btn.dataset.id;
+                    const file = state.files.find(f => f.id === fileId);
+                    if (!file) return;
+                    
+                    // プレビューを表示してからダウンロード確認
+                    btn.innerHTML = '⏳';
+                    try {
+                        const previewData = await getFilePreview(file);
+                        showPreviewModal(file, previewData);
+                    } catch (err) {
+                        // プレビューエラーでも直接ダウンロード可能に
+                        if (confirm(`プレビューを取得できませんでした。\n${file.name} をダウンロードしますか？`)) {
+                            await downloadFileToLocal(file);
+                        }
+                    }
+                    btn.innerHTML = '💾';
+                });
+            });
+
+            // 選択ファイル一括ダウンロード
+            const downloadSelected = document.getElementById('downloadSelected');
+            if (downloadSelected) {
+                downloadSelected.addEventListener('click', async () => {
+                    const selectedFiles = state.files.filter(f => state.selectedFiles.includes(f.id));
+                    for (const file of selectedFiles) {
+                        try {
+                            await downloadFileToLocal(file);
+                            await delay(500); // 連続ダウンロード制限対策
+                        } catch (err) {
+                            console.error('Download error:', err);
+                        }
+                    }
+                    alert(`${selectedFiles.length}件のファイルをダウンロードしました`);
+                });
+            }
+
+            // プレビューモーダル
+            const closePreview = document.getElementById('closePreview');
+            const cancelDownload = document.getElementById('cancelDownload');
+            const confirmDownload = document.getElementById('confirmDownload');
+            
+            if (closePreview) closePreview.addEventListener('click', hidePreviewModal);
+            if (cancelDownload) cancelDownload.addEventListener('click', hidePreviewModal);
+            if (confirmDownload) {
+                confirmDownload.addEventListener('click', async () => {
+                    if (state.previewFile) {
+                        try {
+                            await downloadFileToLocal(state.previewFile);
+                            hidePreviewModal();
+                        } catch (err) {
+                            alert('ダウンロードエラー: ' + err.message);
+                        }
+                    }
+                });
+            }
+
+            // ファイルアップロード
+            const dropZone = document.getElementById('dropZone');
+            const fileInput = document.getElementById('fileInput');
+            if (dropZone && fileInput) {
+                dropZone.addEventListener('click', () => fileInput.click());
+                dropZone.addEventListener('dragover', e => { e.preventDefault(); });
+                dropZone.addEventListener('drop', e => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files.length) {
+                        state.uploadedFiles = [...state.uploadedFiles, ...Array.from(e.dataTransfer.files)];
+                        render();
+                    }
+                });
+                fileInput.addEventListener('change', e => {
+                    if (e.target.files.length) {
+                        state.uploadedFiles = [...state.uploadedFiles, ...Array.from(e.target.files)];
+                        render();
+                    }
+                });
+            }
+
+            document.querySelectorAll('.removeFile').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    state.uploadedFiles.splice(parseInt(btn.dataset.idx), 1);
+                    render();
+                });
+            });
+
+            const resetBtn = document.getElementById('resetBtn');
+            if (resetBtn) resetBtn.addEventListener('click', () => {
+                state.uploadedFiles = [];
+                state.selectedFiles = [];
+                state.selectedExtensions = [];
+                render();
+            });
+
+            const confirmBtn = document.getElementById('confirmBtn');
+            if (confirmBtn) confirmBtn.addEventListener('click', handleConfirm);
+
+            // チャット
+            const chatForm = document.getElementById('chatForm');
+            if (chatForm) chatForm.addEventListener('submit', handleChat);
+
+            const newChatBtn = document.getElementById('newChatBtn');
+            if (newChatBtn) newChatBtn.addEventListener('click', () => {
+                state.screen = 'fileSelect';
+                state.chatHistory = [];
+                state.selectedFiles = [];
+                state.uploadedFiles = [];
+                state.downloadedFiles = [];
+                state.analyzedFiles = [];
+                state.fileContents = {};
+                state.selectedExtensions = [];
+                render();
+            });
+
+            const retryBtn = document.getElementById('retryBtn');
+            if (retryBtn) retryBtn.addEventListener('click', () => { state.error = null; state.screen = 'welcome'; render(); });
+        }
+
+        // ===========================================
+        // ハンドラ
+        // ===========================================
+        async function handleGoogleSignIn() {
+            try {
+                await initializeGoogleAuth();
+                await signInWithGoogle();
+                render();
+            } catch (e) {
+                console.error('Google Sign In Error:', e);
+                alert('Google認証エラー: ' + e.message);
+            }
+        }
+
+        async function handleStart() {
+            if (!state.geminiApiKey || !state.isGoogleSignedIn) return;
+
+            try {
+                initializeGemini(state.geminiApiKey);
+                state.isLoading = true;
+                state.screen = 'driveSelect';
+                render();
+
+                state.sharedDrives = await fetchSharedDrives();
+                state.isLoading = false;
+                render();
+            } catch (e) {
+                state.error = e.message;
+                state.screen = 'error';
+                render();
+            }
+        }
+
+        async function handleSelectDrive(driveId, driveName) {
+            state.selectedDrive = { id: driveId, name: driveName };
+            state.screen = 'fileSelect';
+            await loadDriveFiles();
+        }
+
+        async function loadDriveFiles() {
+            state.isLoadingFiles = true;
+            render();
+
+            try {
+                const result = await fetchDriveFiles(state.selectedDrive.id);
+                state.files = (result.files || []).filter(f => 
+                    f.mimeType !== 'application/vnd.google-apps.folder'
+                );
+                state.filteredFiles = [...state.files];
+                
+                // 拡張子統計を計算
+                state.extensionStats = calculateExtensionStats(state.files);
+            } catch (e) {
+                console.error('Error loading files:', e);
+                state.error = 'ファイル読み込みエラー: ' + e.message;
+            }
+
+            state.isLoadingFiles = false;
+            render();
+        }
+
+        function handleSearch() {
+            applyFilters();
+            render();
+        }
+
+        function applyFilters() {
+            const input = document.getElementById('searchInput');
+            const query = input ? input.value.trim().toLowerCase() : '';
+            
+            let filtered = [...state.files];
+            
+            // キーワードフィルタ
+            if (query) {
+                filtered = filtered.filter(f => f.name.toLowerCase().includes(query));
+            }
+            
+            // 拡張子フィルタ
+            if (state.selectedExtensions.length > 0) {
+                filtered = filtered.filter(f => {
+                    const extInfo = getFileExtInfo(f.mimeType, f.name);
+                    return state.selectedExtensions.includes(extInfo.actualExt);
+                });
+            }
+            
+            state.filteredFiles = filtered;
+            
+            // 統計を再計算
+            state.extensionStats = calculateExtensionStats(state.files);
+        }
+
+        async function handleConfirm() {
+            if (state.uploadedFiles.length === 0 && state.selectedFiles.length === 0) return;
+
+            state.screen = 'uploading';
+            state.downloadedFiles = [];
+            state.analyzedFiles = [];
+            state.fileContents = {};
+
+            const driveFiles = state.files.filter(f => state.selectedFiles.includes(f.id));
+            const totalFiles = state.uploadedFiles.length + driveFiles.length;
+            state.uploadProgress = { current: 0, total: totalFiles + 2, message: '準備中...' };
+            render();
+
+            try {
+                // RAGストア作成
+                state.uploadProgress.message = 'AIインデックス作成中...';
+                render();
+                const storeName = 'gdrive-v4-' + Date.now();
+                state.ragStoreName = await createRagStore(storeName);
+                state.uploadProgress.current = 1;
+                render();
+
+                let idx = 1;
+                const allContents = {};
+
+                // ローカルファイル処理
+                for (const file of state.uploadedFiles) {
+                    state.uploadProgress.current = idx++;
+                    state.uploadProgress.message = 'ローカルファイル解析中...';
+                    state.uploadProgress.fileName = file.name;
+                    render();
+
+                    try {
+                        const arrayBuffer = await file.arrayBuffer();
+                        const content = await parseFileContent(arrayBuffer, file.name, file.type);
+                        allContents[file.name] = content;
+
+                        const extInfo = getFileExtInfo(file.type, file.name);
+                        
+                        state.downloadedFiles.push({
+                            name: file.name,
+                            ext: extInfo.actualExt,
+                            extInfo: extInfo
+                        });
+
+                        state.analyzedFiles.push({
+                            name: file.name,
+                            ext: extInfo.actualExt,
+                            extInfo: extInfo
+                        });
+
+                        const textBlob = new Blob([content], { type: 'text/plain' });
+                        const safeName = file.name.replace(/[^\x00-\x7F]/g, '_') + '.txt';
+                        await uploadToRagStore(state.ragStoreName, new File([textBlob], safeName, { type: 'text/plain' }));
+
+                        render();
+                    } catch (e) {
+                        console.error('Local file error:', e);
+                    }
+                }
+
+                // Driveファイル処理
+                state.uploadProgress.message = 'Driveファイルを処理中...';
+                render();
+
+                const chunkSize = 3;
+                for (let i = 0; i < driveFiles.length; i += chunkSize) {
+                    const chunk = driveFiles.slice(i, i + chunkSize);
+
+                    await Promise.all(chunk.map(async (driveFile) => {
+                        state.uploadProgress.current = idx++;
+                        state.uploadProgress.fileName = driveFile.name;
+                        render();
+
+                        try {
+                            const previewData = await getFilePreview(driveFile);
+                            allContents[driveFile.name] = previewData.content;
+
+                            const extInfo = getFileExtInfo(driveFile.mimeType, driveFile.name);
+
+                            state.downloadedFiles.push({
+                                name: driveFile.name,
+                                ext: extInfo.actualExt,
+                                extInfo: extInfo
+                            });
+
+                            state.analyzedFiles.push({
+                                name: driveFile.name,
+                                ext: extInfo.actualExt,
+                                extInfo: extInfo
+                            });
+
+                            const textBlob = new Blob([previewData.content], { type: 'text/plain' });
+                            const safeName = driveFile.name.replace(/[^\x00-\x7F]/g, '_') + '.txt';
+                            await uploadToRagStore(state.ragStoreName, new File([textBlob], safeName, { type: 'text/plain' }));
+
+                            render();
+                        } catch (e) {
+                            console.error('Drive file error:', e);
+                        }
+                    }));
+                }
+
+                state.fileContents = allContents;
+
+                state.uploadProgress.current = totalFiles + 2;
+                state.uploadProgress.message = '完了！';
+                render();
+                await delay(500);
+
+                state.screen = 'chat';
+                state.chatHistory = [];
+                render();
+            } catch (e) {
+                state.error = '処理失敗: ' + e.message;
+                state.screen = 'error';
+                render();
+            }
+        }
+
+        async function handleChat(e) {
+            e.preventDefault();
+            const input = document.getElementById('chatInput');
+            const query = input.value.trim();
+            if (!query || state.isLoading) return;
+
+            input.value = '';
+            state.chatHistory.push({ role: 'user', content: query });
+            state.isLoading = true;
+            render();
+
+            try {
+                const result = await fileSearch(state.ragStoreName, query);
+                const sources = result.groundingChunks
+                    .filter(c => c.retrievedContext?.text)
+                    .map(c => c.retrievedContext.text);
+                state.chatHistory.push({ role: 'assistant', content: result.text, sources });
+            } catch (e) {
+                state.chatHistory.push({
+                    role: 'assistant',
+                    content: `エラーが発生しました: ${e.message}`,
+                    sources: []
+                });
+            }
+
+            state.isLoading = false;
+            render();
+        }
+
+        // ===========================================
+        // 初期化
+        // ===========================================
+        console.log('📚 資料検索AI Pro v4 初期化中...');
+
+        window.addEventListener('load', async () => {
+            try {
+                if (GOOGLE_CLIENT_ID) {
+                    await initializeGoogleAuth();
+                }
+            } catch (e) {
+                console.warn('Google Auth init warning:', e);
+            }
+            render();
+        });
+
+        render();
+    </script>
+</body>
+
+</html>
